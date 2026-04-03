@@ -93,7 +93,7 @@ app.get('/api/orders', async (req, res) => {
 });
 
 app.post('/api/orders', async (req, res) => {
-  const { items, total, payment_method, note } = req.body;
+  const { items, total, payment_method, note, customer_id, discount_type, discount_value, discount_amount } = req.body;
 
   // Get next order number
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -105,7 +105,12 @@ app.post('/api/orders', async (req, res) => {
 
   const { data: order, error: orderErr } = await supabase
     .from('orders')
-    .insert([{ order_number: orderNum, total, payment_method, note, status: 'pending' }])
+    .insert([{ order_number: orderNum, total, payment_method, note, status: 'pending',
+      customer_id: customer_id || null,
+      discount_type: discount_type || null,
+      discount_value: discount_value || 0,
+      discount_amount: discount_amount || 0
+    }])
     .select()
     .single();
   if (orderErr) return res.status(500).json({ error: orderErr.message });
@@ -119,6 +124,15 @@ app.post('/api/orders', async (req, res) => {
   }));
   const { error: itemsErr } = await supabase.from('order_items').insert(orderItems);
   if (itemsErr) return res.status(500).json({ error: itemsErr.message });
+
+  // Add points to customer (every 10 baht = 1 point)
+  if (customer_id) {
+    const earned = Math.floor(total / 10);
+    if (earned > 0) {
+      const { data: cur } = await supabase.from('customers').select('points').eq('id', customer_id).single();
+      await supabase.from('customers').update({ points: (cur?.points || 0) + earned }).eq('id', customer_id);
+    }
+  }
 
   // Notify KDS via WebSocket
   broadcast({ type: 'NEW_ORDER', order: { ...order, items } });
@@ -198,6 +212,50 @@ app.get('/api/reports/top-items', async (req, res) => {
     .map(([name, qty]) => ({ name, qty }));
 
   res.json(sorted);
+});
+
+
+// ─── CUSTOMERS ──────────────────────────────────────────────
+
+app.get('/api/customers', async (req, res) => {
+  const { phone } = req.query;
+  let query = supabase.from('customers').select('*').order('created_at', { ascending: false });
+  if (phone) query = query.ilike('phone', `%${phone}%`);
+  const { data, error } = await query.limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/api/customers', async (req, res) => {
+  const { name, phone } = req.body;
+  const { data, error } = await supabase
+    .from('customers')
+    .insert([{ name, phone, points: 0 }])
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/api/customers/:id/history', async (req, res) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*, order_items(quantity, unit_price, menu_item:menu_items(name))')
+    .eq('customer_id', req.params.id)
+    .eq('status', 'done')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/api/customers/:id/points', async (req, res) => {
+  const { delta } = req.body; // +N or -N
+  const { data: cur } = await supabase.from('customers').select('points').eq('id', req.params.id).single();
+  const newPoints = Math.max(0, (cur?.points || 0) + delta);
+  const { data, error } = await supabase
+    .from('customers').update({ points: newPoints }).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 // ─── HEALTH CHECK ────────────────────────────────────────
