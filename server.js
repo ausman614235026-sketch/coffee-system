@@ -220,6 +220,40 @@ app.get('/api/reports/top-items', async (req, res) => {
 });
 
 
+
+// ─── PROMOTIONS ─────────────────────────────────────────────
+
+app.get('/api/promotions', async (req, res) => {
+  let query = supabase.from('promotions').select('*').order('created_at');
+  if (!req.query.all) query = query.eq('active', true);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/api/promotions', async (req, res) => {
+  const { name, type, value, min_qty } = req.body;
+  const { data, error } = await supabase
+    .from('promotions')
+    .insert([{ name, type, value: parseInt(value), min_qty: parseInt(min_qty)||0, active: true }])
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/api/promotions/:id', async (req, res) => {
+  const { data, error } = await supabase
+    .from('promotions').update(req.body).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/api/promotions/:id', async (req, res) => {
+  const { error } = await supabase.from('promotions').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 // ─── CUSTOMERS ──────────────────────────────────────────────
 
 app.get('/api/customers', async (req, res) => {
