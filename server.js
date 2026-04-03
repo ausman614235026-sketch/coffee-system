@@ -33,11 +33,9 @@ app.ws('/ws', (ws) => {
 // ─── MENU ───────────────────────────────────────────────
 
 app.get('/api/menu', async (req, res) => {
-  const { data, error } = await supabase
-    .from('menu_items')
-    .select('*')
-    .eq('active', true)
-    .order('category');
+  let query = supabase.from('menu_items').select('*').order('category');
+  if (!req.query.all) query = query.eq('active', true);
+  const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
