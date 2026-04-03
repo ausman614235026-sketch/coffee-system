@@ -125,13 +125,18 @@ app.post('/api/orders', async (req, res) => {
   const { error: itemsErr } = await supabase.from('order_items').insert(orderItems);
   if (itemsErr) return res.status(500).json({ error: itemsErr.message });
 
-  // Add points to customer (every 10 baht = 1 point)
+  // Handle points: deduct redeemed, add earned
   if (customer_id) {
-    const earned = Math.floor(total / 10);
-    if (earned > 0) {
-      const { data: cur } = await supabase.from('customers').select('points').eq('id', customer_id).single();
-      await supabase.from('customers').update({ points: (cur?.points || 0) + earned }).eq('id', customer_id);
+    const { data: cur } = await supabase.from('customers').select('points').eq('id', customer_id).single();
+    let pts = cur?.points || 0;
+    // Deduct redeemed points
+    if (discount_type === 'points' && discount_value > 0) {
+      pts = Math.max(0, pts - discount_value);
     }
+    // Add earned points (every 10 baht = 1 point, based on final total)
+    const earned = Math.floor(total / 10);
+    pts += earned;
+    await supabase.from('customers').update({ points: pts }).eq('id', customer_id);
   }
 
   // Notify KDS via WebSocket
