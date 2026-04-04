@@ -120,7 +120,8 @@ app.post('/api/orders', async (req, res) => {
     menu_item_id: i.id,
     quantity: i.qty,
     unit_price: i.price,
-    subtotal: i.price * i.qty
+    subtotal: i.price * i.qty,
+    note: i.item_note || ''
   }));
   const { error: itemsErr } = await supabase.from('order_items').insert(orderItems);
   if (itemsErr) return res.status(500).json({ error: itemsErr.message });
