@@ -298,6 +298,129 @@ app.patch('/api/customers/:id/points', async (req, res) => {
   res.json(data);
 });
 
+
+// ─── REPORTS EXTENDED ───────────────────────────────────────
+
+// ยอดขายตามช่วงวันที่
+app.get('/api/reports/range', async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from/to required' });
+  const { data: orders, error } = await supabase
+    .from('orders')
+    .select('total, payment_method, discount_amount, created_at')
+    .gte('created_at', `${from}T00:00:00`)
+    .lte('created_at', `${to}T23:59:59`)
+    .eq('status', 'done');
+  if (error) return res.status(500).json({ error: error.message });
+
+  const total = (orders||[]).reduce((s,o) => s + o.total, 0);
+  const count = (orders||[]).length;
+  const discount = (orders||[]).reduce((s,o) => s + (o.discount_amount||0), 0);
+  const byMethod = {};
+  (orders||[]).forEach(o => {
+    byMethod[o.payment_method] = (byMethod[o.payment_method]||0) + o.total;
+  });
+  // Daily breakdown
+  const daily = {};
+  (orders||[]).forEach(o => {
+    const d = o.created_at.slice(0,10);
+    daily[d] = (daily[d]||0) + o.total;
+  });
+  res.json({ total, count, avg: count ? Math.round(total/count) : 0, discount, byMethod, daily });
+});
+
+// เปรียบเทียบสัปดาห์/เดือน
+app.get('/api/reports/compare', async (req, res) => {
+  const { mode = 'week' } = req.query; // week or month
+  const now = new Date();
+  const periods = [];
+  for (let i = 0; i < (mode === 'week' ? 4 : 3); i++) {
+    let from, to, label;
+    if (mode === 'week') {
+      to = new Date(now); to.setDate(now.getDate() - i*7);
+      from = new Date(to); from.setDate(to.getDate() - 6);
+      label = i === 0 ? 'สัปดาห์นี้' : `${i} สัปดาห์ก่อน`;
+    } else {
+      to = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+      from = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const months = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+      label = months[from.getMonth()];
+    }
+    const { data } = await supabase.from('orders')
+      .select('total')
+      .gte('created_at', from.toISOString())
+      .lte('created_at', to.toISOString())
+      .eq('status', 'done');
+    const total = (data||[]).reduce((s,o) => s+o.total, 0);
+    periods.push({ label, total, count: (data||[]).length });
+  }
+  res.json(periods.reverse());
+});
+
+// ลูกค้าที่ซื้อบ่อยที่สุด
+app.get('/api/reports/top-customers', async (req, res) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('total, customer:customers(id, name, phone, points)')
+    .eq('status', 'done')
+    .not('customer_id', 'is', null);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const map = {};
+  (data||[]).forEach(o => {
+    if (!o.customer) return;
+    const id = o.customer.id;
+    if (!map[id]) map[id] = { ...o.customer, total: 0, count: 0 };
+    map[id].total += o.total;
+    map[id].count += 1;
+  });
+  const sorted = Object.values(map).sort((a,b) => b.total - a.total).slice(0, 10);
+  res.json(sorted);
+});
+
+// ช่วงเวลาขายดี (peak hours)
+app.get('/api/reports/peak-hours', async (req, res) => {
+  const { days = 30 } = req.query;
+  const since = new Date(); since.setDate(since.getDate() - parseInt(days));
+  const { data, error } = await supabase
+    .from('orders')
+    .select('created_at, total')
+    .gte('created_at', since.toISOString())
+    .eq('status', 'done');
+  if (error) return res.status(500).json({ error: error.message });
+
+  const hours = Array(24).fill(0).map((_,i) => ({ hour: i, total: 0, count: 0 }));
+  (data||[]).forEach(o => {
+    const h = new Date(o.created_at).getHours();
+    hours[h].total += o.total;
+    hours[h].count += 1;
+  });
+  res.json(hours);
+});
+
+// ส่วนลดทั้งหมด
+app.get('/api/reports/discounts', async (req, res) => {
+  const { from, to } = req.query;
+  let query = supabase.from('orders')
+    .select('discount_type, discount_value, discount_amount, created_at')
+    .eq('status', 'done')
+    .not('discount_type', 'is', null);
+  if (from) query = query.gte('created_at', `${from}T00:00:00`);
+  if (to) query = query.lte('created_at', `${to}T23:59:59`);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const totalDiscount = (data||[]).reduce((s,o) => s+(o.discount_amount||0), 0);
+  const byType = {};
+  (data||[]).forEach(o => {
+    const t = o.discount_type || 'other';
+    if (!byType[t]) byType[t] = { count: 0, total: 0 };
+    byType[t].count += 1;
+    byType[t].total += o.discount_amount || 0;
+  });
+  res.json({ totalDiscount, count: (data||[]).length, byType });
+});
+
 // ─── HEALTH CHECK ────────────────────────────────────────
 
 app.get('/health', (_, res) => res.json({ ok: true, time: new Date().toISOString() }));
